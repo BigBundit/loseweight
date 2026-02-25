@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Share2, RotateCcw, Play, Heart } from 'lucide-react';
+import { Share2, RotateCcw, Play, Heart, Camera } from 'lucide-react';
+import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 
 // Game constants
 const PLAYER_RADIUS = 25;
@@ -10,9 +11,12 @@ type GameState = 'start' | 'playing' | 'gameover';
 
 export default function Game() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const faceLandmarkerRef = useRef<FaceLandmarker | null>(null);
   const [gameState, setGameState] = useState<GameState>('start');
   const [score, setScore] = useState(0);
   const [finalImage, setFinalImage] = useState<string | null>(null);
+  const [isCameraReady, setIsCameraReady] = useState(false);
 
   // Refs for mutable game state to avoid re-renders during game loop
   const gameStateRef = useRef(gameState);
@@ -35,6 +39,72 @@ export default function Game() {
   useEffect(() => {
     gameStateRef.current = gameState;
   }, [gameState]);
+
+  // Initialize camera and FaceLandmarker
+  useEffect(() => {
+    // Suppress harmless MediaPipe INFO logs from WASM
+    const originalConsoleInfo = console.info;
+    const originalConsoleLog = console.log;
+    const originalConsoleWarn = console.warn;
+
+    const filterLog = (originalFn: any) => (...args: any[]) => {
+      if (typeof args[0] === 'string' && args[0].includes('Created TensorFlow Lite XNNPACK delegate')) {
+        return;
+      }
+      originalFn(...args);
+    };
+
+    console.info = filterLog(originalConsoleInfo);
+    console.log = filterLog(originalConsoleLog);
+    console.warn = filterLog(originalConsoleWarn);
+
+    let stream: MediaStream | null = null;
+    let isMounted = true;
+
+    const setupCamera = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+        if (videoRef.current && isMounted) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play();
+        }
+      } catch (err) {
+        console.error("Error accessing camera:", err);
+      }
+    };
+
+    const initLandmarker = async () => {
+      try {
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        );
+        const landmarker = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
+            delegate: "GPU"
+          },
+          runningMode: "VIDEO",
+          numFaces: 1
+        });
+        if (isMounted) {
+          faceLandmarkerRef.current = landmarker;
+          setIsCameraReady(true);
+        }
+      } catch (err) {
+        console.error("Error initializing FaceLandmarker:", err);
+      }
+    };
+
+    setupCamera();
+    initLandmarker();
+
+    return () => {
+      isMounted = false;
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, []);
 
   // Initialize game
   const initGame = () => {
@@ -169,6 +239,39 @@ export default function Game() {
         spawnTimerRef.current = 0;
       }
 
+      // Face Tracking for Player Movement
+      if (faceLandmarkerRef.current && videoRef.current && videoRef.current.readyState >= 2) {
+        const results = faceLandmarkerRef.current.detectForVideo(videoRef.current, performance.now());
+        if (results.faceLandmarks && results.faceLandmarks.length > 0) {
+          const landmarks = results.faceLandmarks[0];
+          const nose = landmarks[1]; // Nose tip
+
+          const video = videoRef.current;
+          const videoRatio = video.videoWidth / video.videoHeight;
+          const canvasRatio = canvas.width / canvas.height;
+
+          let drawWidth, drawHeight;
+          if (videoRatio > canvasRatio) {
+            drawHeight = canvas.height;
+            drawWidth = canvas.height * videoRatio;
+          } else {
+            drawWidth = canvas.width;
+            drawHeight = canvas.width / videoRatio;
+          }
+
+          const targetX = canvas.width / 2 + drawWidth / 2 - nose.x * drawWidth;
+          const targetY = canvas.height / 2 - drawHeight / 2 + nose.y * drawHeight;
+
+          // Smooth movement towards nose
+          playerRef.current.x += (targetX - playerRef.current.x) * 0.15;
+          playerRef.current.y += (targetY - playerRef.current.y) * 0.15;
+
+          // Clamp to screen
+          playerRef.current.x = Math.max(PLAYER_RADIUS, Math.min(canvas.width - PLAYER_RADIUS, playerRef.current.x));
+          playerRef.current.y = Math.max(PLAYER_RADIUS, Math.min(canvas.height - PLAYER_RADIUS, playerRef.current.y));
+        }
+      }
+
       // Update sweets
       for (let i = sweetsRef.current.length - 1; i >= 0; i--) {
         const sweet = sweetsRef.current[i];
@@ -293,6 +396,31 @@ export default function Game() {
       ctx.fillStyle = '#fff0f5'; // Lavender blush
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       
+      // Draw camera background
+      if (videoRef.current && videoRef.current.readyState >= 2) {
+        ctx.save();
+        ctx.globalAlpha = 0.3; // Faded
+        ctx.filter = 'blur(12px)'; // Blurred
+        
+        const video = videoRef.current;
+        const videoRatio = video.videoWidth / video.videoHeight;
+        const canvasRatio = canvas.width / canvas.height;
+        
+        let drawWidth, drawHeight;
+        if (videoRatio > canvasRatio) {
+          drawHeight = canvas.height;
+          drawWidth = canvas.height * videoRatio;
+        } else {
+          drawWidth = canvas.width;
+          drawHeight = canvas.width / videoRatio;
+        }
+
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.scale(-1, 1); // Mirror
+        ctx.drawImage(video, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+        ctx.restore();
+      }
+
       ctx.strokeStyle = 'rgba(255, 182, 193, 0.3)'; // Light pink grid
       ctx.lineWidth = 2;
       const gridSize = 40;
@@ -377,19 +505,7 @@ export default function Game() {
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (gameStateRef.current !== 'playing') return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    let newX = e.clientX - rect.left;
-    let newY = e.clientY - rect.top;
-
-    // Clamp to screen
-    newX = Math.max(PLAYER_RADIUS, Math.min(canvas.width - PLAYER_RADIUS, newX));
-    newY = Math.max(PLAYER_RADIUS, Math.min(canvas.height - PLAYER_RADIUS, newY));
-
-    playerRef.current = { x: newX, y: newY };
+    // Disabled pointer movement, now using camera
   };
 
   const handlePointerUp = () => {
@@ -419,6 +535,7 @@ export default function Game() {
 
   return (
     <div className="relative w-full h-full font-['Nunito',sans-serif]">
+      <video ref={videoRef} className="hidden" playsInline muted autoPlay />
       <canvas
         ref={canvasRef}
         className="block w-full h-full cursor-pointer"
@@ -451,10 +568,24 @@ export default function Game() {
             
             <button 
               onClick={initGame}
-              className="group relative flex items-center gap-3 bg-pink-500 text-white px-10 py-5 rounded-full font-black text-2xl border-4 border-gray-800 shadow-[6px_6px_0px_0px_rgba(31,41,55,1)] hover:translate-y-1 hover:shadow-[2px_2px_0px_0px_rgba(31,41,55,1)] active:translate-y-2 active:shadow-none transition-all"
+              disabled={!isCameraReady}
+              className={`group relative flex items-center gap-3 px-10 py-5 rounded-full font-black text-2xl border-4 border-gray-800 shadow-[6px_6px_0px_0px_rgba(31,41,55,1)] transition-all ${
+                isCameraReady 
+                  ? 'bg-pink-500 text-white hover:translate-y-1 hover:shadow-[2px_2px_0px_0px_rgba(31,41,55,1)] active:translate-y-2 active:shadow-none' 
+                  : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+              }`}
             >
-              <Play fill="currentColor" size={28} className="group-hover:scale-110 transition-transform" />
-              TAP TO START
+              {isCameraReady ? (
+                <>
+                  <Play fill="currentColor" size={28} className="group-hover:scale-110 transition-transform" />
+                  TAP TO START
+                </>
+              ) : (
+                <>
+                  <Camera size={28} className="animate-pulse" />
+                  LOADING CAMERA...
+                </>
+              )}
             </button>
           </div>
         </div>
