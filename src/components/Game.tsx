@@ -42,22 +42,6 @@ export default function Game() {
 
   // Initialize camera and FaceLandmarker
   useEffect(() => {
-    // Suppress harmless MediaPipe INFO logs from WASM
-    const originalConsoleInfo = console.info;
-    const originalConsoleLog = console.log;
-    const originalConsoleWarn = console.warn;
-
-    const filterLog = (originalFn: any) => (...args: any[]) => {
-      if (typeof args[0] === 'string' && args[0].includes('Created TensorFlow Lite XNNPACK delegate')) {
-        return;
-      }
-      originalFn(...args);
-    };
-
-    console.info = filterLog(originalConsoleInfo);
-    console.log = filterLog(originalConsoleLog);
-    console.warn = filterLog(originalConsoleWarn);
-
     let stream: MediaStream | null = null;
     let isMounted = true;
 
@@ -246,25 +230,20 @@ export default function Game() {
           const landmarks = results.faceLandmarks[0];
           const nose = landmarks[1]; // Nose tip
 
-          const video = videoRef.current;
-          const videoRatio = video.videoWidth / video.videoHeight;
-          const canvasRatio = canvas.width / canvas.height;
+          // Amplify movement so user doesn't have to move head to the edge of the camera
+          const sensitivity = 2.5; // 2.5x movement multiplier
+          
+          // Calculate offset from center (0.5)
+          // nose.x is mirrored: moving left physically increases nose.x in camera
+          const offsetX = (0.5 - nose.x) * sensitivity;
+          const offsetY = (nose.y - 0.5) * sensitivity;
 
-          let drawWidth, drawHeight;
-          if (videoRatio > canvasRatio) {
-            drawHeight = canvas.height;
-            drawWidth = canvas.height * videoRatio;
-          } else {
-            drawWidth = canvas.width;
-            drawHeight = canvas.width / videoRatio;
-          }
-
-          const targetX = canvas.width / 2 + drawWidth / 2 - nose.x * drawWidth;
-          const targetY = canvas.height / 2 - drawHeight / 2 + nose.y * drawHeight;
+          const targetX = canvas.width / 2 + offsetX * canvas.width;
+          const targetY = canvas.height / 2 + offsetY * canvas.height;
 
           // Smooth movement towards nose
-          playerRef.current.x += (targetX - playerRef.current.x) * 0.15;
-          playerRef.current.y += (targetY - playerRef.current.y) * 0.15;
+          playerRef.current.x += (targetX - playerRef.current.x) * 0.25;
+          playerRef.current.y += (targetY - playerRef.current.y) * 0.25;
 
           // Clamp to screen
           playerRef.current.x = Math.max(PLAYER_RADIUS, Math.min(canvas.width - PLAYER_RADIUS, playerRef.current.x));
