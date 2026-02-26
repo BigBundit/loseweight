@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Share2, RotateCcw, Play, Heart, Camera } from 'lucide-react';
-import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 
 // Game constants
 const PLAYER_RADIUS = 25;
@@ -65,10 +64,10 @@ export default function Game() {
 
     const initLandmarker = async () => {
       try {
-        const vision = await FilesetResolver.forVisionTasks(
+        const vision = await (window as any).FilesetResolver.forVisionTasks(
           "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
         );
-        const landmarker = await FaceLandmarker.createFromOptions(vision, {
+        const landmarker = await (window as any).FaceLandmarker.createFromOptions(vision, {
           baseOptions: {
             modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
             delegate: "GPU"
