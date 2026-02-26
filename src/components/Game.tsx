@@ -110,6 +110,17 @@ export default function Game() {
   const initGame = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    // Auto-calibrate on start if face is detected
+    if (faceLandmarkerRef.current && videoRef.current && videoRef.current.readyState >= 2) {
+      const results = faceLandmarkerRef.current.detectForVideo(videoRef.current, performance.now());
+      if (results.faceLandmarks && results.faceLandmarks.length > 0) {
+        const landmarks = results.faceLandmarks[0];
+        const nose = landmarks[1];
+        noseOffsetRef.current = { x: nose.x, y: nose.y };
+      }
+    }
+
     playerRef.current = { x: canvas.width / 2, y: canvas.height / 2 };
     sweetsRef.current = [];
     scoreRef.current = 0;
@@ -205,6 +216,9 @@ export default function Game() {
     const update = (dt: number) => {
       if (gameStateRef.current !== 'playing') return;
 
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
       // Calculate player velocity for tilting
       const px = playerRef.current.x;
       const py = playerRef.current.y;
@@ -246,16 +260,17 @@ export default function Game() {
           const landmarks = results.faceLandmarks[0];
           const nose = landmarks[1]; // Nose tip
 
-          // Direct 1:1 mapping with the mirrored camera feed
-          // nose.x is 0-1 (left to right in camera frame)
-          // Since we mirror the video, nose.x = 0 is physically right, nose.x = 1 is physically left
-          // To make it feel natural (mirrored), targetX should be (1 - nose.x) * width
-          const targetX = (1 - nose.x) * canvas.width;
-          const targetY = nose.y * canvas.height;
+          // Re-add sensitivity and use calibrated offset
+          const sensitivity = 2.5;
+          const offsetX = (noseOffsetRef.current.x - nose.x) * sensitivity;
+          const offsetY = (nose.y - noseOffsetRef.current.y) * sensitivity;
 
-          // Faster smoothing for more responsive "sensor" feel
-          playerRef.current.x += (targetX - playerRef.current.x) * 0.4;
-          playerRef.current.y += (targetY - playerRef.current.y) * 0.4;
+          const targetX = canvas.width / 2 + offsetX * canvas.width;
+          const targetY = canvas.height / 2 + offsetY * canvas.height;
+
+          // Responsive smoothing
+          playerRef.current.x += (targetX - playerRef.current.x) * 0.3;
+          playerRef.current.y += (targetY - playerRef.current.y) * 0.3;
 
           // Clamp to screen
           playerRef.current.x = Math.max(PLAYER_RADIUS, Math.min(canvas.width - PLAYER_RADIUS, playerRef.current.x));
@@ -461,22 +476,40 @@ export default function Game() {
       frameRef.current = requestAnimationFrame(loop);
     };
 
-    const resize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-      if (gameStateRef.current === 'start') {
-        playerRef.current = { x: canvas.width / 2, y: canvas.height / 2 };
-        draw();
-      }
-    };
-    window.addEventListener('resize', resize);
-    resize();
-
     frameRef.current = requestAnimationFrame(loop);
 
     return () => {
       cancelAnimationFrame(frameRef.current);
-      window.removeEventListener('resize', resize);
+    };
+  }, []);
+
+  // Robust Resize Handling
+  useEffect(() => {
+    const handleResize = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      
+      // Use clientWidth/Height for accurate mobile dimensions
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      
+      canvas.width = width;
+      canvas.height = height;
+      
+      if (gameStateRef.current === 'start') {
+        playerRef.current = { x: width / 2, y: height / 2 };
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+    handleResize(); // Initial call
+
+    // Extra call after a short delay to handle mobile orientation/keyboard shifts
+    const timeout = setTimeout(handleResize, 500);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      clearTimeout(timeout);
     };
   }, []);
 
