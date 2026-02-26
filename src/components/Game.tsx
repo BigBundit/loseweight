@@ -47,7 +47,13 @@ export default function Game() {
 
     const setupCamera = async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { 
+            facingMode: 'user',
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          } 
+        });
         if (videoRef.current && isMounted) {
           videoRef.current.srcObject = stream;
           videoRef.current.play();
@@ -513,8 +519,14 @@ export default function Game() {
   };
 
   return (
-    <div className="relative w-full h-full font-['Nunito',sans-serif]">
-      <video ref={videoRef} className="hidden" playsInline muted autoPlay />
+    <div className="relative w-full h-full font-['Nunito',sans-serif] overflow-hidden">
+      <video 
+        ref={videoRef} 
+        style={{ position: 'absolute', opacity: 0, zIndex: -1, pointerEvents: 'none', width: '1px', height: '1px' }} 
+        playsInline 
+        autoPlay 
+        muted 
+      />
       <canvas
         ref={canvasRef}
         className="block w-full h-full cursor-pointer"
