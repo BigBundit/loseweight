@@ -15,8 +15,10 @@ export default defineConfig(({mode}) => {
         '@': path.resolve(__dirname, '.'),
       },
     },
-    optimizeDeps: {
-      exclude: ['@mediapipe/tasks-vision']
+    build: {
+      rollupOptions: {
+        external: ['@mediapipe/tasks-vision']
+      }
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.

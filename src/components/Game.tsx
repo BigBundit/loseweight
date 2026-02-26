@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Share2, RotateCcw, Play, Heart, Camera } from 'lucide-react';
+import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 
 // Game constants
 const PLAYER_RADIUS = 25;
@@ -16,9 +17,6 @@ export default function Game() {
   const [score, setScore] = useState(0);
   const [finalImage, setFinalImage] = useState<string | null>(null);
   const [isCameraReady, setIsCameraReady] = useState(false);
-
-  // Detect if device is mobile
-  const isMobile = window.innerWidth < 768 || 'ontouchstart' in window;
 
   // Refs for mutable game state to avoid re-renders during game loop
   const gameStateRef = useRef(gameState);
@@ -52,8 +50,8 @@ export default function Game() {
         stream = await navigator.mediaDevices.getUserMedia({ 
           video: { 
             facingMode: 'user',
-            width: { ideal: 640 },
-            height: { ideal: 480 }
+            width: { ideal: 320 },
+            height: { ideal: 240 }
           } 
         });
         if (videoRef.current && isMounted) {
@@ -67,9 +65,9 @@ export default function Game() {
 
     const initLandmarker = async () => {
       try {
-        // Dynamic import for MediaPipe to work in build
-        const { FaceLandmarker, FilesetResolver } = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/dist/vision_bundle.mjs');
-        const vision = { FaceLandmarker, FilesetResolver };
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        );
         const landmarker = await FaceLandmarker.createFromOptions(vision, {
           baseOptions: {
             modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
@@ -231,8 +229,8 @@ export default function Game() {
         spawnTimerRef.current = 0;
       }
 
-      // Face Tracking for Player Movement (only on desktop)
-      if (!isMobile && faceLandmarkerRef.current && videoRef.current && videoRef.current.readyState >= 2) {
+      // Face Tracking for Player Movement
+      if (faceLandmarkerRef.current && videoRef.current && videoRef.current.readyState >= 2) {
         const results = faceLandmarkerRef.current.detectForVideo(videoRef.current, performance.now());
         if (results.faceLandmarks && results.faceLandmarks.length > 0) {
           const landmarks = results.faceLandmarks[0];
@@ -492,16 +490,7 @@ export default function Game() {
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (isMobile && gameStateRef.current === 'playing') {
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        playerRef.current.x = Math.max(PLAYER_RADIUS, Math.min(canvas.width - PLAYER_RADIUS, x));
-        playerRef.current.y = Math.max(PLAYER_RADIUS, Math.min(canvas.height - PLAYER_RADIUS, y));
-      }
-    }
+    // Disabled pointer movement, now using camera
   };
 
   const handlePointerUp = () => {
@@ -570,14 +559,14 @@ export default function Game() {
             
             <button 
               onClick={initGame}
-              disabled={!(isCameraReady || isMobile)}
+              disabled={!isCameraReady}
               className={`group relative flex items-center gap-3 px-10 py-5 rounded-full font-black text-2xl border-4 border-gray-800 shadow-[6px_6px_0px_0px_rgba(31,41,55,1)] transition-all ${
-                (isCameraReady || isMobile)
+                isCameraReady 
                   ? 'bg-pink-500 text-white hover:translate-y-1 hover:shadow-[2px_2px_0px_0px_rgba(31,41,55,1)] active:translate-y-2 active:shadow-none' 
                   : 'bg-gray-300 text-gray-500 cursor-not-allowed'
               }`}
             >
-              {(isCameraReady || isMobile) ? (
+              {isCameraReady ? (
                 <>
                   <Play fill="currentColor" size={28} className="group-hover:scale-110 transition-transform" />
                   TAP TO START
