@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Share2, RotateCcw, Play, Heart, Camera } from 'lucide-react';
+import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 
 // Game constants
 const PLAYER_RADIUS = 25;
@@ -16,7 +17,7 @@ export default function Game() {
   const [score, setScore] = useState(0);
   const [finalImage, setFinalImage] = useState<string | null>(null);
   const [isCameraReady, setIsCameraReady] = useState(false);
-  const [cameraError, setCameraError] = useState(false); // track if camera fails to start
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   // Refs for mutable game state to avoid re-renders during game loop
   const gameStateRef = useRef(gameState);
@@ -30,6 +31,7 @@ export default function Game() {
   const playerVelocityRef = useRef({ vx: 0, vy: 0 });
   const lastPlayerPosRef = useRef({ x: 0, y: 0 });
   const playerTiltRef = useRef(0);
+  const noseOffsetRef = useRef({ x: 0.5, y: 0.5 });
 
   // Input handling refs
   const isDraggingRef = useRef(false);
@@ -50,34 +52,33 @@ export default function Game() {
         stream = await navigator.mediaDevices.getUserMedia({ 
           video: { 
             facingMode: 'user',
-            width: { ideal: 320 },
-            height: { ideal: 240 }
+            width: { ideal: 640 },
+            height: { ideal: 480 }
           } 
         });
         if (videoRef.current && isMounted) {
           videoRef.current.srcObject = stream;
           videoRef.current.play();
         }
-      } catch (err) {
+        if (isMounted) setCameraError(null);
+      } catch (err: any) {
         console.error("Error accessing camera:", err);
-        setCameraError(true);
+        if (isMounted) {
+          if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+            setCameraError("Camera permission denied. Please enable camera access in your browser settings to play.");
+          } else {
+            setCameraError("Could not access camera. Please make sure no other app is using it.");
+          }
+        }
       }
     };
 
-    // if camera never becomes ready within a few seconds, fall back
-    const timeout = setTimeout(() => {
-      if (!isCameraReady && !cameraError) {
-        console.warn('Camera not ready after timeout, falling back to touch/mouse.');
-        setCameraError(true);
-      }
-    }, 8000);
-
     const initLandmarker = async () => {
       try {
-        const vision = await (window as any).FilesetResolver.forVisionTasks(
+        const vision = await FilesetResolver.forVisionTasks(
           "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
         );
-        const landmarker = await (window as any).FaceLandmarker.createFromOptions(vision, {
+        const landmarker = await FaceLandmarker.createFromOptions(vision, {
           baseOptions: {
             modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
             delegate: "GPU"
@@ -91,7 +92,6 @@ export default function Game() {
         }
       } catch (err) {
         console.error("Error initializing FaceLandmarker:", err);
-        setCameraError(true);
       }
     };
 
@@ -103,7 +103,6 @@ export default function Game() {
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
       }
-      clearTimeout(timeout);
     };
   }, []);
 
@@ -247,20 +246,16 @@ export default function Game() {
           const landmarks = results.faceLandmarks[0];
           const nose = landmarks[1]; // Nose tip
 
-          // Amplify movement so user doesn't have to move head to the edge of the camera
-          const sensitivity = 2.5; // 2.5x movement multiplier
-          
-          // Calculate offset from center (0.5)
-          // nose.x is mirrored: moving left physically increases nose.x in camera
-          const offsetX = (0.5 - nose.x) * sensitivity;
-          const offsetY = (nose.y - 0.5) * sensitivity;
+          // Direct 1:1 mapping with the mirrored camera feed
+          // nose.x is 0-1 (left to right in camera frame)
+          // Since we mirror the video, nose.x = 0 is physically right, nose.x = 1 is physically left
+          // To make it feel natural (mirrored), targetX should be (1 - nose.x) * width
+          const targetX = (1 - nose.x) * canvas.width;
+          const targetY = nose.y * canvas.height;
 
-          const targetX = canvas.width / 2 + offsetX * canvas.width;
-          const targetY = canvas.height / 2 + offsetY * canvas.height;
-
-          // Smooth movement towards nose
-          playerRef.current.x += (targetX - playerRef.current.x) * 0.25;
-          playerRef.current.y += (targetY - playerRef.current.y) * 0.25;
+          // Faster smoothing for more responsive "sensor" feel
+          playerRef.current.x += (targetX - playerRef.current.x) * 0.4;
+          playerRef.current.y += (targetY - playerRef.current.y) * 0.4;
 
           // Clamp to screen
           playerRef.current.x = Math.max(PLAYER_RADIUS, Math.min(canvas.width - PLAYER_RADIUS, playerRef.current.x));
@@ -486,6 +481,18 @@ export default function Game() {
   }, []);
 
   // Input Handlers
+  const handleCalibrate = () => {
+    if (faceLandmarkerRef.current && videoRef.current && videoRef.current.readyState >= 2) {
+      const results = faceLandmarkerRef.current.detectForVideo(videoRef.current, performance.now());
+      if (results.faceLandmarks && results.faceLandmarks.length > 0) {
+        const landmarks = results.faceLandmarks[0];
+        const nose = landmarks[1];
+        noseOffsetRef.current = { x: nose.x, y: nose.y };
+        // Visual feedback could be added here
+      }
+    }
+  };
+
   const handlePointerDown = (e: React.PointerEvent) => {
     if (gameStateRef.current === 'start') {
       initGame();
@@ -497,31 +504,11 @@ export default function Game() {
         const y = e.clientY - rect.top;
         playerRef.current = { x, y };
       }
-    } else if ((cameraError || !isCameraReady) && gameStateRef.current === 'playing') {
-      // allow reposition during play when using pointer fallback
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        playerRef.current.x = Math.max(PLAYER_RADIUS, Math.min(canvas.width - PLAYER_RADIUS, x));
-        playerRef.current.y = Math.max(PLAYER_RADIUS, Math.min(canvas.height - PLAYER_RADIUS, y));
-      }
     }
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    // allow drag movement when camera isn't working yet
-    if ((cameraError || !isCameraReady) && gameStateRef.current === 'playing') {
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        playerRef.current.x = Math.max(PLAYER_RADIUS, Math.min(canvas.width - PLAYER_RADIUS, x));
-        playerRef.current.y = Math.max(PLAYER_RADIUS, Math.min(canvas.height - PLAYER_RADIUS, y));
-      }
-    }
+    // Disabled pointer movement, now using camera
   };
 
   const handlePointerUp = () => {
@@ -553,7 +540,15 @@ export default function Game() {
     <div className="relative w-full h-full font-['Nunito',sans-serif] overflow-hidden">
       <video 
         ref={videoRef} 
-        style={{ position: 'absolute', opacity: 0, zIndex: -1, pointerEvents: 'none', width: '1px', height: '1px' }} 
+        style={{ 
+          position: 'absolute', 
+          opacity: 0, 
+          zIndex: -1, 
+          pointerEvents: 'none', 
+          width: '640px', 
+          height: '480px',
+          top: '-1000px' // Move far off-screen instead of 1x1
+        }} 
         playsInline 
         autoPlay 
         muted 
@@ -569,13 +564,26 @@ export default function Game() {
 
       {/* UI Overlay */}
       {gameState === 'playing' && (
-        <div className="absolute top-8 left-0 w-full text-center pointer-events-none">
-          <div className="inline-block bg-white/80 backdrop-blur-sm px-8 py-3 rounded-full border-4 border-gray-800 shadow-[4px_4px_0px_0px_rgba(31,41,55,1)]">
-            <span className="text-4xl font-black text-pink-500 tracking-wider">
-              {score}
-            </span>
+        <>
+          <div className="absolute top-8 left-0 w-full text-center pointer-events-none">
+            <div className="inline-block bg-white/80 backdrop-blur-sm px-8 py-3 rounded-full border-4 border-gray-800 shadow-[4px_4px_0px_0px_rgba(31,41,55,1)]">
+              <span className="text-4xl font-black text-pink-500 tracking-wider">
+                {score}
+              </span>
+            </div>
           </div>
-        </div>
+          
+          <button 
+            onClick={handleCalibrate}
+            className="absolute top-8 right-8 bg-white/90 p-3 rounded-2xl border-4 border-gray-800 shadow-[4px_4px_0px_0px_rgba(31,41,55,1)] hover:translate-y-1 hover:shadow-[2px_2px_0px_0px_rgba(31,41,55,1)] active:translate-y-2 active:shadow-none transition-all z-50"
+            title="Calibrate Center"
+          >
+            <div className="flex flex-col items-center">
+              <div className="w-4 h-4 rounded-full border-2 border-pink-500 mb-1" />
+              <span className="text-[10px] font-black text-gray-800">CALIBRATE</span>
+            </div>
+          </button>
+        </>
       )}
 
       {gameState === 'start' && (
@@ -587,30 +595,40 @@ export default function Game() {
               <Heart className="text-pink-500 fill-pink-500 animate-bounce" size={40} style={{ animationDelay: '0.2s' }} />
             </div>
             <p className="text-gray-600 font-bold mb-8 text-xl bg-pink-100 px-4 py-1 rounded-full border-2 border-gray-800">Dodge the sweets!</p>
-            {cameraError && (
-              <p className="text-red-600 font-bold mb-4">Camera unavailable – use mouse/touch to control.</p>
+            
+            {cameraError ? (
+              <div className="bg-red-50 border-2 border-red-200 p-4 rounded-2xl mb-6 max-w-xs text-center">
+                <p className="text-red-600 font-bold text-sm">{cameraError}</p>
+                <button 
+                  onClick={() => window.location.reload()}
+                  className="mt-3 text-red-700 underline font-black text-sm"
+                >
+                  TRY AGAIN
+                </button>
+              </div>
+            ) : (
+              <button 
+                onClick={initGame}
+                disabled={!isCameraReady}
+                className={`group relative flex items-center gap-3 px-10 py-5 rounded-full font-black text-2xl border-4 border-gray-800 shadow-[6px_6px_0px_0px_rgba(31,41,55,1)] transition-all ${
+                  isCameraReady 
+                    ? 'bg-pink-500 text-white hover:translate-y-1 hover:shadow-[2px_2px_0px_0px_rgba(31,41,55,1)] active:translate-y-2 active:shadow-none' 
+                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                }`}
+              >
+                {isCameraReady ? (
+                  <>
+                    <Play fill="currentColor" size={28} className="group-hover:scale-110 transition-transform" />
+                    TAP TO START
+                  </>
+                ) : (
+                  <>
+                    <Camera size={28} className="animate-pulse" />
+                    LOADING CAMERA...
+                  </>
+                )}
+              </button>
             )}
-            <button 
-              onClick={initGame}
-              disabled={!isCameraReady && !cameraError}
-              className={`group relative flex items-center gap-3 px-10 py-5 rounded-full font-black text-2xl border-4 border-gray-800 shadow-[6px_6px_0px_0px_rgba(31,41,55,1)] transition-all ${
-                (isCameraReady || cameraError) 
-                  ? 'bg-pink-500 text-white hover:translate-y-1 hover:shadow-[2px_2px_0px_0px_rgba(31,41,55,1)] active:translate-y-2 active:shadow-none' 
-                  : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-              }`}
-            >
-              {(isCameraReady || cameraError) ? (
-                <>
-                  <Play fill="currentColor" size={28} className="group-hover:scale-110 transition-transform" />
-                  TAP TO START
-                </>
-              ) : (
-                <>
-                  <Camera size={28} className="animate-pulse" />
-                  LOADING CAMERA...
-                </>
-              )}
-            </button>
           </div>
         </div>
       )}
